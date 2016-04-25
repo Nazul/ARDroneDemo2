@@ -16,6 +16,9 @@
 package mx.iteso.msc.ardronedemo2;
 
 import de.yadrone.base.ARDrone;
+import de.yadrone.base.command.CommandManager;
+import de.yadrone.base.command.VideoChannel;
+import de.yadrone.base.command.VideoCodec;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.ByteArrayInputStream;
@@ -70,6 +73,14 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     private boolean objectDetected = false;
     // The center of the currently tracked object
     private Point trackedObject = new Point(0.0d, 0.0d);
+    // Predefined object to track
+    private TrackedObject objectColor = new TrackedObject(TrackedObjectColor.CUSTOM);
+    // Left boundary
+    private final int MAX_LEFT = 500;
+    // Right boundary
+    private final int MAX_RIGHT = 700;
+    // Drone speed
+    private final int DRONE_SPEED = 20;
 
     /**
      * Creates new form ARDroneDemo2
@@ -82,15 +93,19 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
         // Init components
         droneActive = droneTracking = false;
-        faceCascade = new CascadeClassifier(getClass().getResource("/mx/iteso/msc/ardronedemo2/resources/lbpcascade_frontalface.xml").getFile().substring(1).replace("/", "\\"));
+        faceCascade = new CascadeClassifier(getClass().getResource("/mx/iteso/msc/ardronedemo2/resources/lbpcascade_frontalface.xml").getFile().substring(1).replace("/", "\\").replace("%20", " "));
+        System.out.println(getClass().getResource("/mx/iteso/msc/ardronedemo2/resources/lbpcascade_frontalface.xml").getFile().substring(1).replace("/", "\\").replace("%20", " "));
         absoluteFaceSize = 0;
-        // Update status bar
+        // Update status bar & radio buttons
         slidersStateChanged(null);
+        changeObjectPanelStatus(false);
         // Connect to drone
         try {
             drone = new ARDrone();
             System.out.println("Connect drone controller");
             drone.start();
+            drone.getCommandManager().setVideoChannel(VideoChannel.HORI);
+            drone.getCommandManager().setVideoCodec(VideoCodec.H264_720P);
             drone.getVideoManager().addImageListener((BufferedImage newImage) -> {
                 currentFrame = newImage;
             });
@@ -104,13 +119,25 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             // If drone is active and tracking objects, send move commands every 500 ms
             Runnable droneProcess = () -> {
                 if (droneActive && droneTracking && objectDetected) {
-                    if (trackedObject.x < 540) {
-                        drone.spinRight();
+                    if (trackedObject.x < MAX_LEFT) {
+                        // Original (sticky)
+                        //drone.spinRight();
+                        CommandManager cmd = drone.getCommandManager();
+                        // Second: constant values
+                        //cmd.spinRight(30).doFor(500);
+                        cmd.spinRight(DRONE_SPEED).doFor(500 - (int)(500 * trackedObject.x / MAX_LEFT));
                         System.out.println("Spin right");
                     }
-                    if (trackedObject.x > 740) {
-                        drone.spinLeft();
+                    else if (trackedObject.x > MAX_RIGHT) {
+                        //drone.spinLeft();
+                        CommandManager cmd = drone.getCommandManager();
+                        // Second: constant values
+                        //cmd.spinLeft(30).doFor(500);
+                        cmd.spinLeft(DRONE_SPEED).doFor((int)(500 * (trackedObject.x - MAX_RIGHT) / (1280 - MAX_RIGHT)));
                         System.out.println("Spin left");
+                    }
+                    else {
+                        System.out.println("No movement");
                     }
                 }
             };
@@ -127,6 +154,10 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     }
 
     private Mat findAndDrawObjects(Mat maskedImage, Mat frame) {
+        return findAndDrawObjects(maskedImage, frame, new Scalar(250, 0, 0));
+    }
+    
+    private Mat findAndDrawObjects(Mat maskedImage, Mat frame, Scalar color) {
         // Init
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
@@ -136,9 +167,9 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
 
         // If any contour exist...
         if (hierarchy.size().height > 0 && hierarchy.size().width > 0) {
-            // for each contour, display it in blue
+            // for each contour, draw a border
             for (int idx = 0; idx >= 0; idx = (int) hierarchy.get(0, idx)[0]) {
-                Imgproc.drawContours(frame, contours, idx, new Scalar(250, 0, 0));
+                Imgproc.drawContours(frame, contours, idx, color, 5);
             }
         }
         return frame;
@@ -309,18 +340,55 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     private void processRgb(Mat frame) {
         // Init
         Mat blurredImage = new Mat();
+        Mat rgbImage = new Mat();
         Mat mask = new Mat();
         Mat morphOutput = new Mat();
 
         // Remove some noise
         Imgproc.blur(frame, blurredImage, new Size(7, 7));
 
-        // Get thresholding values from the UI
-        Scalar minValue = new Scalar(this.rValueSlider.getValue(), this.gValueSlider.getValue(), this.bValueSlider.getValue());
-        Scalar maxValue = new Scalar(this.rValueSlider.getValue(), this.gValueSlider.getValue(), this.bValueSlider.getValue());
+        // Convert the frame to HSV
+        Imgproc.cvtColor(blurredImage, rgbImage, Imgproc.COLOR_BGR2BGRA);
+        hsvPanel.getGraphics().drawImage(this.mat2Image(rgbImage), 0, 0, 213, 120, null);
 
-        // Threshold image to select object
-        Core.inRange(blurredImage, minValue, maxValue, mask);
+        // Get color of current coordinates
+        if (mouseClicked) {
+            try {
+                int hmin = 180, smin = 255, vmin = 255;
+                int hmax = 0, smax = 0, vmax = 0;
+
+                for (int i = mx - 50; i < mx + 50; i++) {
+                    for (int j = my - 50; j < my + 50; j++) {
+                        double[] hsv = rgbImage.get(j, i);
+                        hmin = (int) (hsv[0] < hmin ? hsv[0] : hmin);
+                        hmax = (int) (hsv[0] > hmax ? hsv[0] : hmax);
+                        smin = (int) (hsv[1] < smin ? hsv[1] : smin);
+                        smax = (int) (hsv[1] > smax ? hsv[1] : smax);
+                        vmin = (int) (hsv[2] < vmin ? hsv[2] : vmin);
+                        vmax = (int) (hsv[2] > vmax ? hsv[2] : vmax);
+                    }
+                }
+                hueMinSlider.setValue(hmin);
+                hueMaxSlider.setValue(hmax);
+                saturationMinSlider.setValue(smin);
+                saturationMaxSlider.setValue(smax);
+                valueMinSlider.setValue(vmin);
+                valueMaxSlider.setValue(vmax);
+                Imgproc.rectangle(frame, new Point(mx - 50, my - 50), new Point(mx + 50, my + 50), new Scalar(255, 0, 255), 4);
+            } catch (Exception ex) {
+
+            } finally {
+                mouseClicked = false;
+            }
+        }
+
+        // Get thresholding values from the UI
+        // Remember: H ranges 0-180, S and V range 0-255
+        Scalar minValues = new Scalar(this.hueMinSlider.getValue(), this.saturationMinSlider.getValue(), this.valueMinSlider.getValue());
+        Scalar maxValues = new Scalar(this.hueMaxSlider.getValue(), this.saturationMaxSlider.getValue(), this.valueMaxSlider.getValue());
+
+        // Threshold HSV image to select object
+        Core.inRange(rgbImage, minValues, maxValues, mask);
 
         // Morphological operators
         // Dilate with large element, erode with small ones
@@ -339,6 +407,60 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
 
         // Find the object(s) contours and show them
         frame = this.findAndDrawObjects(morphOutput, frame);
+
+        // Calculate centers
+        Mat temp = new Mat();
+        morphOutput.copyTo(temp);
+        List<MatOfPoint> contours = new ArrayList<>();
+        Imgproc.findContours(temp, contours, new Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        objectDetected = false;
+        for (int i = 0; i < contours.size(); i++) {
+            Rect objectBoundingRectangle = Imgproc.boundingRect(contours.get(i));
+            int x = objectBoundingRectangle.x + objectBoundingRectangle.width / 2;
+            int y = objectBoundingRectangle.y + objectBoundingRectangle.height / 2;
+            if (i == 0) {
+                objectDetected = true;
+                trackedObject.x = x;
+                trackedObject.y = y;
+                drawCrosshairs(frame, x, y);
+            }
+        }
+    }
+
+    private void processHsvObjects(Mat frame) {
+        // Init
+        Mat blurredImage = new Mat();
+        Mat hsvImage = new Mat();
+        Mat mask = new Mat();
+        Mat morphOutput = new Mat();
+
+        // Remove some noise
+        Imgproc.blur(frame, blurredImage, new Size(7, 7));
+
+        // Convert the frame to HSV
+        Imgproc.cvtColor(blurredImage, hsvImage, Imgproc.COLOR_BGR2HSV);
+        hsvPanel.getGraphics().drawImage(this.mat2Image(hsvImage), 0, 0, 213, 120, null);
+
+        // Threshold HSV image to select object
+        Core.inRange(hsvImage, objectColor.getHsvMin(), objectColor.getHsvMax(), mask);
+
+        // Morphological operators
+        // Dilate with large element, erode with small ones
+        Mat dilateElement = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(24, 24));
+        Mat erodeElement = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(12, 12));
+
+        Imgproc.erode(mask, morphOutput, erodeElement);
+        Imgproc.erode(mask, morphOutput, erodeElement);
+        // Show the partial output
+        erodePanel.getGraphics().drawImage(this.mat2Image(morphOutput), 0, 0, 213, 120, null);
+
+        Imgproc.dilate(mask, morphOutput, dilateElement);
+        Imgproc.dilate(mask, morphOutput, dilateElement);
+        // Show the partial output
+        dilatePanel.getGraphics().drawImage(this.mat2Image(morphOutput), 0, 0, 213, 120, null);
+
+        // Find the object(s) contours and show them
+        frame = this.findAndDrawObjects(morphOutput, frame, objectColor.getColor());
 
         // Calculate centers
         Mat temp = new Mat();
@@ -380,10 +502,13 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                 if (faceDetectionRadioButton.isSelected()) {
                     processFaces(frame);
                 }
+                if (preconfigDetectionRadioButton.isSelected()) {
+                    processHsvObjects(frame);
+                }
                 // If the drone is in tracking mode, then draw boundaries
                 if (droneTracking && frame != null) {
-                    Imgproc.rectangle(frame, new Point(0, 0), new Point(540, 720), new Scalar(255, 0, 255), 4);
-                    Imgproc.rectangle(frame, new Point(740, 0), new Point(1280, 720), new Scalar(255, 0, 255), 4);
+                    Imgproc.rectangle(frame, new Point(0, 0), new Point(MAX_LEFT, 720), new Scalar(255, 0, 255), 5);
+                    Imgproc.rectangle(frame, new Point(MAX_RIGHT, 0), new Point(1280, 720), new Scalar(255, 0, 255), 5);
                 }
                 // convert the Mat object (OpenCV) to Image (Java AWT)
                 imageToShow = mat2Image(frame);
@@ -404,7 +529,8 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
-        buttonGroup1 = new javax.swing.ButtonGroup();
+        detectionTypeButtonGroup = new javax.swing.ButtonGroup();
+        objectColorButtonGroup = new javax.swing.ButtonGroup();
         cameraPanel = new javax.swing.JPanel();
         processPanel = new javax.swing.JPanel();
         hsvPanel = new javax.swing.JPanel();
@@ -419,16 +545,19 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         valuePanel = new javax.swing.JPanel();
         valueMinSlider = new javax.swing.JSlider();
         valueMaxSlider = new javax.swing.JSlider();
-        rgbPanel = new javax.swing.JPanel();
-        rValueSlider = new javax.swing.JSlider();
-        gValueSlider = new javax.swing.JSlider();
-        bValueSlider = new javax.swing.JSlider();
-        rgbColorDetectionRadioButton = new javax.swing.JRadioButton();
-        hsvColorDetectionRadioButton = new javax.swing.JRadioButton();
-        faceDetectionRadioButton = new javax.swing.JRadioButton();
         startDroneButton = new javax.swing.JButton();
         startTrackingButton = new javax.swing.JButton();
         statusLabel = new javax.swing.JLabel();
+        jPanel1 = new javax.swing.JPanel();
+        blueObjectColorRadioButton = new javax.swing.JRadioButton();
+        greenObjectColorRadioButton = new javax.swing.JRadioButton();
+        redObjectColorRadioButton = new javax.swing.JRadioButton();
+        yellowObjectColorRadioButton = new javax.swing.JRadioButton();
+        jPanel2 = new javax.swing.JPanel();
+        rgbColorDetectionRadioButton = new javax.swing.JRadioButton();
+        hsvColorDetectionRadioButton = new javax.swing.JRadioButton();
+        preconfigDetectionRadioButton = new javax.swing.JRadioButton();
+        faceDetectionRadioButton = new javax.swing.JRadioButton();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
         setPreferredSize(new java.awt.Dimension(820, 600));
@@ -528,7 +657,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         });
         huePanel.add(hueMaxSlider);
 
-        getContentPane().add(huePanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 90, 150, 90));
+        getContentPane().add(huePanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 80, 150, 90));
 
         saturationPanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Saturation"));
         saturationPanel.setPreferredSize(new java.awt.Dimension(300, 60));
@@ -553,7 +682,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         });
         saturationPanel.add(saturationMaxSlider);
 
-        getContentPane().add(saturationPanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 180, 150, 90));
+        getContentPane().add(saturationPanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 170, 150, 90));
 
         valuePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Value"));
         valuePanel.setPreferredSize(new java.awt.Dimension(300, 60));
@@ -578,71 +707,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         });
         valuePanel.add(valueMaxSlider);
 
-        getContentPane().add(valuePanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 270, 150, 90));
-
-        rgbPanel.setBorder(javax.swing.BorderFactory.createTitledBorder("RGB"));
-        rgbPanel.setPreferredSize(new java.awt.Dimension(300, 60));
-
-        rValueSlider.setMaximum(255);
-        rValueSlider.setValue(0);
-        rValueSlider.setPreferredSize(new java.awt.Dimension(140, 26));
-        rValueSlider.addChangeListener(new javax.swing.event.ChangeListener() {
-            public void stateChanged(javax.swing.event.ChangeEvent evt) {
-                slidersStateChanged(evt);
-            }
-        });
-        rgbPanel.add(rValueSlider);
-
-        gValueSlider.setMaximum(255);
-        gValueSlider.setValue(0);
-        gValueSlider.setPreferredSize(new java.awt.Dimension(140, 26));
-        gValueSlider.addChangeListener(new javax.swing.event.ChangeListener() {
-            public void stateChanged(javax.swing.event.ChangeEvent evt) {
-                slidersStateChanged(evt);
-            }
-        });
-        rgbPanel.add(gValueSlider);
-
-        bValueSlider.setMaximum(255);
-        bValueSlider.setValue(255);
-        bValueSlider.setPreferredSize(new java.awt.Dimension(140, 26));
-        bValueSlider.addChangeListener(new javax.swing.event.ChangeListener() {
-            public void stateChanged(javax.swing.event.ChangeEvent evt) {
-                slidersStateChanged(evt);
-            }
-        });
-        rgbPanel.add(bValueSlider);
-
-        getContentPane().add(rgbPanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 360, 150, 120));
-
-        buttonGroup1.add(rgbColorDetectionRadioButton);
-        rgbColorDetectionRadioButton.setText("Color Detection (RGB)");
-        rgbColorDetectionRadioButton.addMouseListener(new java.awt.event.MouseAdapter() {
-            public void mouseClicked(java.awt.event.MouseEvent evt) {
-                detectionButtonClicked(evt);
-            }
-        });
-        getContentPane().add(rgbColorDetectionRadioButton, new org.netbeans.lib.awtextra.AbsoluteConstraints(650, 500, -1, -1));
-
-        buttonGroup1.add(hsvColorDetectionRadioButton);
-        hsvColorDetectionRadioButton.setText("Color Detection (HSV)");
-        hsvColorDetectionRadioButton.setCursor(new java.awt.Cursor(java.awt.Cursor.DEFAULT_CURSOR));
-        hsvColorDetectionRadioButton.addMouseListener(new java.awt.event.MouseAdapter() {
-            public void mouseClicked(java.awt.event.MouseEvent evt) {
-                detectionButtonClicked(evt);
-            }
-        });
-        getContentPane().add(hsvColorDetectionRadioButton, new org.netbeans.lib.awtextra.AbsoluteConstraints(650, 480, -1, -1));
-
-        buttonGroup1.add(faceDetectionRadioButton);
-        faceDetectionRadioButton.setSelected(true);
-        faceDetectionRadioButton.setText("Face Detection");
-        faceDetectionRadioButton.addMouseListener(new java.awt.event.MouseAdapter() {
-            public void mouseClicked(java.awt.event.MouseEvent evt) {
-                detectionButtonClicked(evt);
-            }
-        });
-        getContentPane().add(faceDetectionRadioButton, new org.netbeans.lib.awtextra.AbsoluteConstraints(650, 520, -1, -1));
+        getContentPane().add(valuePanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 260, 150, 90));
 
         startDroneButton.setText("Start Drone");
         startDroneButton.addActionListener(new java.awt.event.ActionListener() {
@@ -664,6 +729,89 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         statusLabel.setBorder(javax.swing.BorderFactory.createBevelBorder(javax.swing.border.BevelBorder.LOWERED));
         getContentPane().add(statusLabel, new org.netbeans.lib.awtextra.AbsoluteConstraints(0, 490, 640, 20));
 
+        jPanel1.setBorder(javax.swing.BorderFactory.createTitledBorder("Object Color"));
+
+        objectColorButtonGroup.add(blueObjectColorRadioButton);
+        blueObjectColorRadioButton.setText("Blue");
+        blueObjectColorRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                blueObjectColorRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel1.add(blueObjectColorRadioButton);
+
+        objectColorButtonGroup.add(greenObjectColorRadioButton);
+        greenObjectColorRadioButton.setText("Green");
+        greenObjectColorRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                greenObjectColorRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel1.add(greenObjectColorRadioButton);
+
+        objectColorButtonGroup.add(redObjectColorRadioButton);
+        redObjectColorRadioButton.setText("Red");
+        redObjectColorRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                redObjectColorRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel1.add(redObjectColorRadioButton);
+
+        objectColorButtonGroup.add(yellowObjectColorRadioButton);
+        yellowObjectColorRadioButton.setSelected(true);
+        yellowObjectColorRadioButton.setText("Yellow");
+        yellowObjectColorRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                yellowObjectColorRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel1.add(yellowObjectColorRadioButton);
+
+        getContentPane().add(jPanel1, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 490, 150, 80));
+
+        jPanel2.setBorder(javax.swing.BorderFactory.createTitledBorder("Detection Type"));
+
+        detectionTypeButtonGroup.add(rgbColorDetectionRadioButton);
+        rgbColorDetectionRadioButton.setText("Color Detection (RGB)");
+        rgbColorDetectionRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                rgbColorDetectionRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel2.add(rgbColorDetectionRadioButton);
+
+        detectionTypeButtonGroup.add(hsvColorDetectionRadioButton);
+        hsvColorDetectionRadioButton.setText("Color Detection (HSV)");
+        hsvColorDetectionRadioButton.setCursor(new java.awt.Cursor(java.awt.Cursor.DEFAULT_CURSOR));
+        hsvColorDetectionRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                hsvColorDetectionRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel2.add(hsvColorDetectionRadioButton);
+
+        detectionTypeButtonGroup.add(preconfigDetectionRadioButton);
+        preconfigDetectionRadioButton.setText("Pre-Configured (HSV)");
+        preconfigDetectionRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                preconfigDetectionRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel2.add(preconfigDetectionRadioButton);
+
+        detectionTypeButtonGroup.add(faceDetectionRadioButton);
+        faceDetectionRadioButton.setSelected(true);
+        faceDetectionRadioButton.setText("Face Detection (LBP)");
+        faceDetectionRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                faceDetectionRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel2.add(faceDetectionRadioButton);
+
+        getContentPane().add(jPanel2, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 350, 150, 140));
+
         pack();
     }// </editor-fold>//GEN-END:initComponents
 
@@ -681,10 +829,16 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                     + ". Sat. range: " + this.saturationMinSlider.getValue() + "-" + this.saturationMaxSlider.getValue()
                     + ". Value range: " + this.valueMinSlider.getValue() + "-" + this.valueMaxSlider.getValue();
         }
-        if (rgbColorDetectionRadioButton.isSelected()) {
-            valuesToPrint = "Red: " + this.rValueSlider.getValue()
-                    + ". Green: " + this.gValueSlider.getValue()
-                    + ". Blue: " + this.bValueSlider.getValue();
+        else if (rgbColorDetectionRadioButton.isSelected()) {
+            valuesToPrint = "Red range: " + this.hueMinSlider.getValue() + "-" + this.hueMaxSlider.getValue()
+                    + ". Green range: " + this.saturationMinSlider.getValue() + "-" + this.saturationMaxSlider.getValue()
+                    + ". Blue range: " + this.valueMinSlider.getValue() + "-" + this.valueMaxSlider.getValue();
+        }
+        else if (faceDetectionRadioButton.isSelected()) {
+            valuesToPrint = "'Face detection mode";
+        }
+        else {
+            valuesToPrint = "Pre-configured HSV object detection. Search for blue, green, yellow and red objects.";
         }
         statusLabel.setText(valuesToPrint);
     }//GEN-LAST:event_slidersStateChanged
@@ -709,9 +863,80 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         droneTracking = !droneTracking;
     }//GEN-LAST:event_startTrackingButtonActionPerformed
 
-    private void detectionButtonClicked(java.awt.event.MouseEvent evt) {//GEN-FIRST:event_detectionButtonClicked
+    private void changeSlidersStatus(boolean status) {
+        hueMinSlider.setEnabled(status);
+        saturationMinSlider.setEnabled(status);
+        valueMinSlider.setEnabled(status);
+        hueMaxSlider.setEnabled(status);
+        saturationMaxSlider.setEnabled(status);
+        valueMaxSlider.setEnabled(status);
+    }
+    
+    private void changeSliderType(String type) {
+        if (type.equals("HSV")) {
+            huePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Hue"));
+            saturationPanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Saturation"));
+            valuePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Value"));
+            hueMinSlider.setMaximum(180);
+            hueMaxSlider.setMaximum(180);
+        }
+        else {
+            huePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Red"));
+            saturationPanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Green"));
+            valuePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Blue"));
+            hueMinSlider.setMaximum(255);
+            hueMaxSlider.setMaximum(255);
+        }
+    }
+    
+    private void changeObjectPanelStatus(boolean status) {
+        blueObjectColorRadioButton.setEnabled(status);
+        greenObjectColorRadioButton.setEnabled(status);
+        yellowObjectColorRadioButton.setEnabled(status);
+        redObjectColorRadioButton.setEnabled(status);
+    }
+    
+    private void hsvColorDetectionRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_hsvColorDetectionRadioButtonActionPerformed
+        changeSlidersStatus(true);
+        changeSliderType("HSV");
         slidersStateChanged(null);
-    }//GEN-LAST:event_detectionButtonClicked
+        changeObjectPanelStatus(false);
+    }//GEN-LAST:event_hsvColorDetectionRadioButtonActionPerformed
+
+    private void rgbColorDetectionRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_rgbColorDetectionRadioButtonActionPerformed
+        changeSlidersStatus(true);
+        changeSliderType("RGB");
+        slidersStateChanged(null);
+        changeObjectPanelStatus(false);
+    }//GEN-LAST:event_rgbColorDetectionRadioButtonActionPerformed
+
+    private void faceDetectionRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_faceDetectionRadioButtonActionPerformed
+        changeSlidersStatus(false);
+        slidersStateChanged(null);
+        changeObjectPanelStatus(false);
+    }//GEN-LAST:event_faceDetectionRadioButtonActionPerformed
+
+    private void preconfigDetectionRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_preconfigDetectionRadioButtonActionPerformed
+        changeSlidersStatus(false);
+        slidersStateChanged(null);
+        changeObjectPanelStatus(true);
+    }//GEN-LAST:event_preconfigDetectionRadioButtonActionPerformed
+
+    private void blueObjectColorRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_blueObjectColorRadioButtonActionPerformed
+        objectColor = new TrackedObject(TrackedObjectColor.BLUE);
+    }//GEN-LAST:event_blueObjectColorRadioButtonActionPerformed
+
+    private void greenObjectColorRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_greenObjectColorRadioButtonActionPerformed
+        objectColor = new TrackedObject(TrackedObjectColor.GREEN);
+    }//GEN-LAST:event_greenObjectColorRadioButtonActionPerformed
+
+    private void redObjectColorRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_redObjectColorRadioButtonActionPerformed
+        objectColor = new TrackedObject(TrackedObjectColor.RED);
+    }//GEN-LAST:event_redObjectColorRadioButtonActionPerformed
+
+    private void yellowObjectColorRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_yellowObjectColorRadioButtonActionPerformed
+        objectColor = new TrackedObject(TrackedObjectColor.YELLOW);
+    }//GEN-LAST:event_yellowObjectColorRadioButtonActionPerformed
 
     /**
      * @param args the command line arguments
@@ -734,22 +959,25 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     }
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
-    private javax.swing.JSlider bValueSlider;
-    private javax.swing.ButtonGroup buttonGroup1;
+    private javax.swing.JRadioButton blueObjectColorRadioButton;
     private javax.swing.JPanel cameraPanel;
+    private javax.swing.ButtonGroup detectionTypeButtonGroup;
     private javax.swing.JPanel dilatePanel;
     private javax.swing.JPanel erodePanel;
     private javax.swing.JRadioButton faceDetectionRadioButton;
-    private javax.swing.JSlider gValueSlider;
+    private javax.swing.JRadioButton greenObjectColorRadioButton;
     private javax.swing.JRadioButton hsvColorDetectionRadioButton;
     private javax.swing.JPanel hsvPanel;
     private javax.swing.JSlider hueMaxSlider;
     private javax.swing.JSlider hueMinSlider;
     private javax.swing.JPanel huePanel;
+    private javax.swing.JPanel jPanel1;
+    private javax.swing.JPanel jPanel2;
+    private javax.swing.ButtonGroup objectColorButtonGroup;
+    private javax.swing.JRadioButton preconfigDetectionRadioButton;
     private javax.swing.JPanel processPanel;
-    private javax.swing.JSlider rValueSlider;
+    private javax.swing.JRadioButton redObjectColorRadioButton;
     private javax.swing.JRadioButton rgbColorDetectionRadioButton;
-    private javax.swing.JPanel rgbPanel;
     private javax.swing.JSlider saturationMaxSlider;
     private javax.swing.JSlider saturationMinSlider;
     private javax.swing.JPanel saturationPanel;
@@ -759,5 +987,6 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     private javax.swing.JSlider valueMaxSlider;
     private javax.swing.JSlider valueMinSlider;
     private javax.swing.JPanel valuePanel;
+    private javax.swing.JRadioButton yellowObjectColorRadioButton;
     // End of variables declaration//GEN-END:variables
 }
