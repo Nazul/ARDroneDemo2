@@ -15,6 +15,15 @@
  */
 package mx.iteso.msc.ardronedemo2;
 
+import com.google.zxing.BinaryBitmap;
+import com.google.zxing.EncodeHintType;
+import com.google.zxing.MultiFormatReader;
+import com.google.zxing.NotFoundException;
+import com.google.zxing.RGBLuminanceSource;
+import com.google.zxing.Result;
+import com.google.zxing.ResultPoint;
+import com.google.zxing.common.HybridBinarizer;
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 import de.yadrone.base.ARDrone;
 import de.yadrone.base.command.CommandManager;
 import de.yadrone.base.command.VideoChannel;
@@ -22,11 +31,17 @@ import de.yadrone.base.command.VideoCodec;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import javax.imageio.ImageIO;
 import javax.swing.UIManager;
 import org.opencv.core.Core;
@@ -43,6 +58,7 @@ import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 import org.opencv.objdetect.CascadeClassifier;
 import org.opencv.objdetect.Objdetect;
+import com.stormbots.MiniPID;
 
 /**
  *
@@ -75,12 +91,15 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     private Point trackedObject = new Point(0.0d, 0.0d);
     // Predefined object to track
     private TrackedObject objectColor = new TrackedObject(TrackedObjectColor.CUSTOM);
+    // 720p (HD) - 1280x720
     // Left boundary
-    private final int MAX_LEFT = 500;
+    private final int MAX_LEFT = 427;//500;
     // Right boundary
-    private final int MAX_RIGHT = 700;
+    private final int MAX_RIGHT = 853;//700;
     // Drone speed
     private final int DRONE_SPEED = 20;
+    // PID Controller
+    MiniPID miniPID;
 
     /**
      * Creates new form ARDroneDemo2
@@ -99,10 +118,16 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         // Update status bar & radio buttons
         slidersStateChanged(null);
         changeObjectPanelStatus(false);
+        // Initialize PID Controller
+        miniPID = new MiniPID(0.25f, 0.01f, 0.4f);
         // Connect to drone
         try {
             drone = new ARDrone();
             System.out.println("Connect drone controller");
+            drone.setHorizontalCamera();
+            drone.setMaxAltitude(2000);
+            drone.setSpeed(DRONE_SPEED);
+            drone.getCommandManager().setOutdoor(false, false);
             drone.start();
             drone.getCommandManager().setVideoChannel(VideoChannel.HORI);
             drone.getCommandManager().setVideoCodec(VideoCodec.H264_720P);
@@ -119,6 +144,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             // If drone is active and tracking objects, send move commands every 500 ms
             Runnable droneProcess = () -> {
                 if (droneActive && droneTracking && objectDetected) {
+                    System.out.println("Trying to do something...");
                     if (trackedObject.x < MAX_LEFT) {
                         // Original (sticky)
                         //drone.spinRight();
@@ -126,7 +152,8 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                         // Second: constant values
                         //cmd.spinRight(30).doFor(500);
                         cmd.spinRight(DRONE_SPEED).doFor(500 - (int)(500 * trackedObject.x / MAX_LEFT));
-                        System.out.println("Spin right");
+                        //cmd.spinRight(DRONE_SPEED).doFor((long)miniPID.getOutput((float)trackedObject.x, 1280));
+                        //System.out.println("Spin right: " + miniPID.getOutput((float)trackedObject.x, 1280));
                     }
                     else if (trackedObject.x > MAX_RIGHT) {
                         //drone.spinLeft();
@@ -134,9 +161,11 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                         // Second: constant values
                         //cmd.spinLeft(30).doFor(500);
                         cmd.spinLeft(DRONE_SPEED).doFor((int)(500 * (trackedObject.x - MAX_RIGHT) / (1280 - MAX_RIGHT)));
-                        System.out.println("Spin left");
+                        //cmd.spinLeft(DRONE_SPEED).doFor((long)miniPID.getOutput((float)trackedObject.x, 1280));
+                        //System.out.println("Spin left: " + miniPID.getOutput((float)trackedObject.x, 1280));
                     }
                     else {
+                        drone.hover();
                         System.out.println("No movement");
                     }
                 }
@@ -200,6 +229,40 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
 
         return result;
     }
+
+    public Point readQRCode(Mat frame) {
+        BufferedImage image = mat2Image(frame);
+        BinaryBitmap bitmap = null;
+        Map hintMap = new HashMap();
+        
+        hintMap.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.L);
+        
+        int[] pixels = image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth());
+        RGBLuminanceSource source = new RGBLuminanceSource(image.getWidth(), image.getHeight(), pixels);
+        bitmap = new BinaryBitmap(new HybridBinarizer(source));
+        
+        Result qrCodeResult;
+        try {
+            qrCodeResult = new MultiFormatReader().decode(bitmap, hintMap);
+            System.out.println("Result object created");
+        }
+        catch (NotFoundException ex) {
+            return null;
+        }
+        ResultPoint[] points = qrCodeResult.getResultPoints();
+        System.out.println("Points received");
+        if (points.length != 3)
+            return null;
+        else {
+            Point p = new Point();
+            System.out.println("P0: " + points[0]);
+            System.out.println("P1: " + points[1]);
+            System.out.println("P2: " + points[2]);
+            p.x = (points[0].getX() + points[1].getX() + points[2].getX()) / 3;
+            p.y = (points[0].getY() + points[1].getY() + points[2].getY()) / 3;
+            return p;
+        }
+    }
     
     private void drawCrosshairs(Mat frame, int x, int y) {
         // Show crosshair
@@ -243,6 +306,33 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             objectDetected = true;
             trackedObject.x = facesArray[0].x + facesArray[0].width / 2;
             trackedObject.y = facesArray[0].y + facesArray[0].height / 2;
+            drawCrosshairs(frame, (int)trackedObject.x, (int)trackedObject.y);
+        }
+    }
+    
+    private void processQr(Mat frame) {
+        Mat grayFrame = new Mat();
+        Mat blurredImage = new Mat();
+        Mat binarizedImage = new Mat();
+        
+        // convert the frame in gray scale
+        Imgproc.cvtColor(frame, grayFrame, Imgproc.COLOR_BGR2GRAY);
+        // equalize the frame histogram to improve the result
+        Imgproc.equalizeHist(grayFrame, grayFrame);
+        //Imgproc.GaussianBlur(grayFrame, blurredImage, new Size(5, 5), 0);
+        Imgproc.GaussianBlur(grayFrame, blurredImage, new Size(5, 5), 0);
+        hsvPanel.getGraphics().drawImage(this.mat2Image(blurredImage), 0, 0, 213, 120, null);
+        //Imgproc.threshold(blurredImage, binarizedImage, 90, 255, Imgproc.THRESH_BINARY);
+        Imgproc.threshold(blurredImage, binarizedImage, 90, 255, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU);
+        erodePanel.getGraphics().drawImage(this.mat2Image(binarizedImage), 0, 0, 213, 120, null);
+        
+        Point qrCenter = readQRCode(binarizedImage);
+
+        // If we have a point (center), use it as a tracking object
+        objectDetected = false;
+        if (qrCenter != null) {
+            objectDetected = true;
+            trackedObject = qrCenter;
             drawCrosshairs(frame, (int)trackedObject.x, (int)trackedObject.y);
         }
     }
@@ -492,7 +582,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                 // Read the current frame
                 frame = image2Mat(currentFrame);
                 // Flip image for easy object manipulation
-                Core.flip(frame, frame, 1);
+                //Core.flip(frame, frame, 1);
                 if (hsvColorDetectionRadioButton.isSelected()) {
                     processHsv(frame);
                 }
@@ -504,6 +594,9 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                 }
                 if (preconfigDetectionRadioButton.isSelected()) {
                     processHsvObjects(frame);
+                }
+                if (qrDetectionRadioButton.isSelected()) {
+                    processQr(frame);
                 }
                 // If the drone is in tracking mode, then draw boundaries
                 if (droneTracking && frame != null) {
@@ -558,6 +651,8 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         hsvColorDetectionRadioButton = new javax.swing.JRadioButton();
         preconfigDetectionRadioButton = new javax.swing.JRadioButton();
         faceDetectionRadioButton = new javax.swing.JRadioButton();
+        qrDetectionRadioButton = new javax.swing.JRadioButton();
+        resetDroneButton = new javax.swing.JButton();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
         setPreferredSize(new java.awt.Dimension(820, 600));
@@ -657,7 +752,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         });
         huePanel.add(hueMaxSlider);
 
-        getContentPane().add(huePanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 80, 150, 90));
+        getContentPane().add(huePanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 70, 150, 90));
 
         saturationPanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Saturation"));
         saturationPanel.setPreferredSize(new java.awt.Dimension(300, 60));
@@ -682,7 +777,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         });
         saturationPanel.add(saturationMaxSlider);
 
-        getContentPane().add(saturationPanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 170, 150, 90));
+        getContentPane().add(saturationPanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 160, 150, 90));
 
         valuePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Value"));
         valuePanel.setPreferredSize(new java.awt.Dimension(300, 60));
@@ -707,7 +802,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         });
         valuePanel.add(valueMaxSlider);
 
-        getContentPane().add(valuePanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 260, 150, 90));
+        getContentPane().add(valuePanel, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 250, 150, 90));
 
         startDroneButton.setText("Start Drone");
         startDroneButton.addActionListener(new java.awt.event.ActionListener() {
@@ -715,7 +810,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                 startDroneButtonActionPerformed(evt);
             }
         });
-        getContentPane().add(startDroneButton, new org.netbeans.lib.awtextra.AbsoluteConstraints(650, 20, 140, -1));
+        getContentPane().add(startDroneButton, new org.netbeans.lib.awtextra.AbsoluteConstraints(650, 10, 140, -1));
 
         startTrackingButton.setText("Start Tracking");
         startTrackingButton.addActionListener(new java.awt.event.ActionListener() {
@@ -723,7 +818,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                 startTrackingButtonActionPerformed(evt);
             }
         });
-        getContentPane().add(startTrackingButton, new org.netbeans.lib.awtextra.AbsoluteConstraints(650, 50, 140, -1));
+        getContentPane().add(startTrackingButton, new org.netbeans.lib.awtextra.AbsoluteConstraints(650, 40, 140, -1));
 
         statusLabel.setText("[statusLabel]");
         statusLabel.setBorder(javax.swing.BorderFactory.createBevelBorder(javax.swing.border.BevelBorder.LOWERED));
@@ -768,7 +863,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         });
         jPanel1.add(yellowObjectColorRadioButton);
 
-        getContentPane().add(jPanel1, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 490, 150, 80));
+        getContentPane().add(jPanel1, new org.netbeans.lib.awtextra.AbsoluteConstraints(540, 510, 250, -1));
 
         jPanel2.setBorder(javax.swing.BorderFactory.createTitledBorder("Detection Type"));
 
@@ -801,7 +896,6 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         jPanel2.add(preconfigDetectionRadioButton);
 
         detectionTypeButtonGroup.add(faceDetectionRadioButton);
-        faceDetectionRadioButton.setSelected(true);
         faceDetectionRadioButton.setText("Face Detection (LBP)");
         faceDetectionRadioButton.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
@@ -810,7 +904,25 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         });
         jPanel2.add(faceDetectionRadioButton);
 
-        getContentPane().add(jPanel2, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 350, 150, 140));
+        detectionTypeButtonGroup.add(qrDetectionRadioButton);
+        qrDetectionRadioButton.setSelected(true);
+        qrDetectionRadioButton.setText("QR Detection            ");
+        qrDetectionRadioButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                qrDetectionRadioButtonActionPerformed(evt);
+            }
+        });
+        jPanel2.add(qrDetectionRadioButton);
+
+        getContentPane().add(jPanel2, new org.netbeans.lib.awtextra.AbsoluteConstraints(640, 340, 150, 170));
+
+        resetDroneButton.setText("Reset Drone");
+        resetDroneButton.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                resetDroneButtonActionPerformed(evt);
+            }
+        });
+        getContentPane().add(resetDroneButton, new org.netbeans.lib.awtextra.AbsoluteConstraints(440, 530, -1, -1));
 
         pack();
     }// </editor-fold>//GEN-END:initComponents
@@ -835,7 +947,10 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                     + ". Blue range: " + this.valueMinSlider.getValue() + "-" + this.valueMaxSlider.getValue();
         }
         else if (faceDetectionRadioButton.isSelected()) {
-            valuesToPrint = "'Face detection mode";
+            valuesToPrint = "Face detection mode";
+        }
+        else if (qrDetectionRadioButton.isSelected()) {
+            valuesToPrint = "QR Code detection mode";
         }
         else {
             valuesToPrint = "Pre-configured HSV object detection. Search for blue, green, yellow and red objects.";
@@ -847,6 +962,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         if (!droneActive) {
             drone.takeOff();
             startDroneButton.setText("Stop Drone");
+            drone.hover();
         } else {
             drone.landing();
             startDroneButton.setText("Start Drone");
@@ -938,6 +1054,16 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         objectColor = new TrackedObject(TrackedObjectColor.YELLOW);
     }//GEN-LAST:event_yellowObjectColorRadioButtonActionPerformed
 
+    private void qrDetectionRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_qrDetectionRadioButtonActionPerformed
+        changeSlidersStatus(false);
+        slidersStateChanged(null);
+        changeObjectPanelStatus(false);
+    }//GEN-LAST:event_qrDetectionRadioButtonActionPerformed
+
+    private void resetDroneButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_resetDroneButtonActionPerformed
+        drone.reset();
+    }//GEN-LAST:event_resetDroneButtonActionPerformed
+
     /**
      * @param args the command line arguments
      */
@@ -976,7 +1102,9 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     private javax.swing.ButtonGroup objectColorButtonGroup;
     private javax.swing.JRadioButton preconfigDetectionRadioButton;
     private javax.swing.JPanel processPanel;
+    private javax.swing.JRadioButton qrDetectionRadioButton;
     private javax.swing.JRadioButton redObjectColorRadioButton;
+    private javax.swing.JButton resetDroneButton;
     private javax.swing.JRadioButton rgbColorDetectionRadioButton;
     private javax.swing.JSlider saturationMaxSlider;
     private javax.swing.JSlider saturationMinSlider;
