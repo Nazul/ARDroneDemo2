@@ -31,8 +31,6 @@ import de.yadrone.base.command.VideoCodec;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -40,8 +38,6 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 import javax.imageio.ImageIO;
 import javax.swing.UIManager;
 import org.opencv.core.Core;
@@ -58,7 +54,7 @@ import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 import org.opencv.objdetect.CascadeClassifier;
 import org.opencv.objdetect.Objdetect;
-import com.stormbots.MiniPID;
+//import com.stormbots.MiniPID;
 
 /**
  *
@@ -99,7 +95,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     // Drone speed
     private final int DRONE_SPEED = 20;
     // PID Controller
-    MiniPID miniPID;
+    //MiniPID miniPID;
 
     /**
      * Creates new form ARDroneDemo2
@@ -119,7 +115,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         slidersStateChanged(null);
         changeObjectPanelStatus(false);
         // Initialize PID Controller
-        miniPID = new MiniPID(0.25f, 0.01f, 0.4f);
+        //miniPID = new MiniPID(0.25f, 0.01f, 0.4f);
         // Connect to drone
         try {
             drone = new ARDrone();
@@ -150,8 +146,8 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                         //drone.spinRight();
                         CommandManager cmd = drone.getCommandManager();
                         // Second: constant values
-                        //cmd.spinRight(30).doFor(500);
-                        cmd.spinRight(DRONE_SPEED).doFor(500 - (int)(500 * trackedObject.x / MAX_LEFT));
+                        cmd.spinRight(30).doFor(500);
+                        //cmd.spinRight(DRONE_SPEED).doFor(500 - (int)(500 * trackedObject.x / MAX_LEFT));
                         //cmd.spinRight(DRONE_SPEED).doFor((long)miniPID.getOutput((float)trackedObject.x, 1280));
                         //System.out.println("Spin right: " + miniPID.getOutput((float)trackedObject.x, 1280));
                     }
@@ -159,8 +155,8 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                         //drone.spinLeft();
                         CommandManager cmd = drone.getCommandManager();
                         // Second: constant values
-                        //cmd.spinLeft(30).doFor(500);
-                        cmd.spinLeft(DRONE_SPEED).doFor((int)(500 * (trackedObject.x - MAX_RIGHT) / (1280 - MAX_RIGHT)));
+                        cmd.spinLeft(30).doFor(500);
+                        //cmd.spinLeft(DRONE_SPEED).doFor((int)(500 * (trackedObject.x - MAX_RIGHT) / (1280 - MAX_RIGHT)));
                         //cmd.spinLeft(DRONE_SPEED).doFor((long)miniPID.getOutput((float)trackedObject.x, 1280));
                         //System.out.println("Spin left: " + miniPID.getOutput((float)trackedObject.x, 1280));
                     }
@@ -437,7 +433,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         // Remove some noise
         Imgproc.blur(frame, blurredImage, new Size(7, 7));
 
-        // Convert the frame to HSV
+        // Convert the frame to BGRA
         Imgproc.cvtColor(blurredImage, rgbImage, Imgproc.COLOR_BGR2BGRA);
         hsvPanel.getGraphics().drawImage(this.mat2Image(rgbImage), 0, 0, 213, 120, null);
 
