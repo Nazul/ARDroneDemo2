@@ -31,6 +31,8 @@ import de.yadrone.base.command.VideoCodec;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -54,7 +56,6 @@ import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 import org.opencv.objdetect.CascadeClassifier;
 import org.opencv.objdetect.Objdetect;
-//import com.stormbots.MiniPID;
 
 /**
  *
@@ -95,7 +96,14 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     // Drone speed
     private final int DRONE_SPEED = 20;
     // PID Controller
-    //MiniPID miniPID;
+    private int center = 0;
+    private final int kp = 10, ki = 10, kd = 10;
+    //private int currentPos = center;
+    private double offset;
+    private double error, lastError, integral, derivative;
+    // Log file
+    private PrintWriter pw;
+    private StringBuilder sb = new StringBuilder();
 
     /**
      * Creates new form ARDroneDemo2
@@ -114,8 +122,21 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         // Update status bar & radio buttons
         slidersStateChanged(null);
         changeObjectPanelStatus(false);
+        // Initialize log
+        try {
+            pw = new PrintWriter(new File("log.csv"));
+            sb.append("Time,");
+            sb.append("CurPos,");
+            sb.append("Error,");
+            sb.append("Integral,");
+            sb.append("Derivative\n");
+        }
+        catch (Exception exc) {
+            exc.printStackTrace();
+            System.exit(-1);
+        }
         // Initialize PID Controller
-        //miniPID = new MiniPID(0.25f, 0.01f, 0.4f);
+        center = cameraPanel.getWidth() / 2;
         // Connect to drone
         try {
             drone = new ARDrone();
@@ -141,29 +162,47 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             Runnable droneProcess = () -> {
                 if (droneActive && droneTracking && objectDetected) {
                     System.out.println("Trying to do something...");
-                    if (trackedObject.x < MAX_LEFT) {
-                        // Original (sticky)
-                        //drone.spinRight();
-                        CommandManager cmd = drone.getCommandManager();
-                        // Second: constant values
-                        cmd.spinRight(30).doFor(500);
-                        //cmd.spinRight(DRONE_SPEED).doFor(500 - (int)(500 * trackedObject.x / MAX_LEFT));
-                        //cmd.spinRight(DRONE_SPEED).doFor((long)miniPID.getOutput((float)trackedObject.x, 1280));
-                        //System.out.println("Spin right: " + miniPID.getOutput((float)trackedObject.x, 1280));
-                    }
-                    else if (trackedObject.x > MAX_RIGHT) {
-                        //drone.spinLeft();
-                        CommandManager cmd = drone.getCommandManager();
-                        // Second: constant values
-                        cmd.spinLeft(30).doFor(500);
-                        //cmd.spinLeft(DRONE_SPEED).doFor((int)(500 * (trackedObject.x - MAX_RIGHT) / (1280 - MAX_RIGHT)));
-                        //cmd.spinLeft(DRONE_SPEED).doFor((long)miniPID.getOutput((float)trackedObject.x, 1280));
-                        //System.out.println("Spin left: " + miniPID.getOutput((float)trackedObject.x, 1280));
-                    }
-                    else {
-                        drone.hover();
-                        System.out.println("No movement");
-                    }
+                    
+                    // PID
+                    // Normalize current position
+                    double curpos = 2.0d * trackedObject.x / (double)cameraPanel.getWidth() - 1.0d;
+                    offset = 0.0d - curpos;
+                    System.out.println("curpos: " + curpos);
+                    System.out.println("offset: " + offset);
+                    error = curpos - offset;
+                    integral += error;
+                    derivative -= lastError;
+                    //labelMove.setText("Move: " + (kp * error + ki * integral + kd * derivative));
+                    lastError = error;
+                    sb.append(System.currentTimeMillis() + ",");
+                    sb.append(curpos + ",");
+                    sb.append(error + ",");
+                    sb.append(integral + ",");
+                    sb.append(derivative + "\n");
+                    
+//                    if (trackedObject.x < MAX_LEFT) {
+//                        // Original (sticky)
+//                        //drone.spinRight();
+//                        CommandManager cmd = drone.getCommandManager();
+//                        // Second: constant values
+//                        cmd.spinRight(30).doFor(500);
+//                        //cmd.spinRight(DRONE_SPEED).doFor(500 - (int)(500 * trackedObject.x / MAX_LEFT));
+//                        //cmd.spinRight(DRONE_SPEED).doFor((long)miniPID.getOutput((float)trackedObject.x, 1280));
+//                        //System.out.println("Spin right: " + miniPID.getOutput((float)trackedObject.x, 1280));
+//                    }
+//                    else if (trackedObject.x > MAX_RIGHT) {
+//                        //drone.spinLeft();
+//                        CommandManager cmd = drone.getCommandManager();
+//                        // Second: constant values
+//                        cmd.spinLeft(30).doFor(500);
+//                        //cmd.spinLeft(DRONE_SPEED).doFor((int)(500 * (trackedObject.x - MAX_RIGHT) / (1280 - MAX_RIGHT)));
+//                        //cmd.spinLeft(DRONE_SPEED).doFor((long)miniPID.getOutput((float)trackedObject.x, 1280));
+//                        //System.out.println("Spin left: " + miniPID.getOutput((float)trackedObject.x, 1280));
+//                    }
+//                    else {
+//                        drone.hover();
+//                        System.out.println("No movement");
+//                    }
                 }
             };
             droneTimer = Executors.newSingleThreadScheduledExecutor();
@@ -653,6 +692,14 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
         setPreferredSize(new java.awt.Dimension(820, 600));
         setResizable(false);
+        addWindowListener(new java.awt.event.WindowAdapter() {
+            public void windowClosed(java.awt.event.WindowEvent evt) {
+                formWindowClosed(evt);
+            }
+            public void windowClosing(java.awt.event.WindowEvent evt) {
+                formWindowClosing(evt);
+            }
+        });
         getContentPane().setLayout(new org.netbeans.lib.awtextra.AbsoluteLayout());
 
         cameraPanel.setBorder(javax.swing.BorderFactory.createEtchedBorder(javax.swing.border.EtchedBorder.RAISED));
@@ -956,11 +1003,11 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
 
     private void startDroneButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_startDroneButtonActionPerformed
         if (!droneActive) {
-            drone.takeOff();
+            //drone.takeOff();
             startDroneButton.setText("Stop Drone");
-            drone.hover();
+            //drone.hover();
         } else {
-            drone.landing();
+            //drone.landing();
             startDroneButton.setText("Start Drone");
         }
         droneActive = !droneActive;
@@ -1059,6 +1106,15 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     private void resetDroneButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_resetDroneButtonActionPerformed
         drone.reset();
     }//GEN-LAST:event_resetDroneButtonActionPerformed
+
+    private void formWindowClosed(java.awt.event.WindowEvent evt) {//GEN-FIRST:event_formWindowClosed
+        // TODO add your handling code here:
+    }//GEN-LAST:event_formWindowClosed
+
+    private void formWindowClosing(java.awt.event.WindowEvent evt) {//GEN-FIRST:event_formWindowClosing
+        pw.write(sb.toString());
+        pw.close();
+    }//GEN-LAST:event_formWindowClosing
 
     /**
      * @param args the command line arguments
