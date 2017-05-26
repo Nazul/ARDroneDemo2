@@ -32,6 +32,7 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -94,10 +95,10 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     // Right boundary
     private final int MAX_RIGHT = 853;//700;
     // Drone speed
-    private final int DRONE_SPEED = 20;
+    private final int DRONE_SPEED = 10;
     // PID Controller
     private int center = 0;
-    private final int kp = 10, ki = 10, kd = 10;
+    private final int kp = 5, ki = 10, kd = 12;
     //private int currentPos = center;
     private double offset;
     private double error, lastError, integral, derivative;
@@ -126,13 +127,12 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         try {
             pw = new PrintWriter(new File("log.csv"));
             sb.append("Time,");
+            sb.append("Move,");
             sb.append("CurPos,");
             sb.append("Error,");
             sb.append("Integral,");
             sb.append("Derivative\n");
-        }
-        catch (Exception exc) {
-            exc.printStackTrace();
+        } catch (FileNotFoundException exc) {
             System.exit(-1);
         }
         // Initialize PID Controller
@@ -157,29 +157,38 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
                 cameraPanel.getGraphics().drawImage(imageToShow, 0, 0, 640, 360, null);
             };
             videoTimer = Executors.newSingleThreadScheduledExecutor();
-            videoTimer.scheduleAtFixedRate(frameProcess, 0, 33, TimeUnit.MILLISECONDS);
+            videoTimer.scheduleAtFixedRate(frameProcess, 0, 66, TimeUnit.MILLISECONDS);
             // If drone is active and tracking objects, send move commands every 500 ms
-            Runnable droneProcess = () -> {
+            Runnable droneProcess;
+            droneProcess = () -> {
                 if (droneActive && droneTracking && objectDetected) {
                     System.out.println("Trying to do something...");
-                    
+
                     // PID
                     // Normalize current position
-                    double curpos = 2.0d * trackedObject.x / (double)cameraPanel.getWidth() - 1.0d;
+                    double curpos = 2.0d * trackedObject.x / (double) cameraPanel.getWidth() - 1.0d;
                     offset = 0.0d - curpos;
                     System.out.println("curpos: " + curpos);
                     System.out.println("offset: " + offset);
                     error = curpos - offset;
                     integral += error;
                     derivative -= lastError;
+                    double move = kp * error + ki * integral + kd * derivative;
                     //labelMove.setText("Move: " + (kp * error + ki * integral + kd * derivative));
                     lastError = error;
-                    sb.append(System.currentTimeMillis() + ",");
-                    sb.append(curpos + ",");
-                    sb.append(error + ",");
-                    sb.append(integral + ",");
-                    sb.append(derivative + "\n");
-                    
+                    sb.append(System.currentTimeMillis()).append(",");
+                    sb.append(curpos).append(",");
+                    sb.append(move).append(",");
+                    sb.append(error).append(",");
+                    sb.append(integral).append(",");
+                    sb.append(derivative).append("\n");
+                    CommandManager cmd = drone.getCommandManager();
+                    if (move > 0) {
+                        cmd.spinRight((int) Math.abs(move * 0.1d)).doFor(10);
+                    } else {
+                        cmd.spinLeft((int) Math.abs(move * 0.1d)).doFor(10);
+                    }
+
 //                    if (trackedObject.x < MAX_LEFT) {
 //                        // Original (sticky)
 //                        //drone.spinRight();
@@ -208,8 +217,6 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             droneTimer = Executors.newSingleThreadScheduledExecutor();
             droneTimer.scheduleAtFixedRate(droneProcess, 0, 500, TimeUnit.MILLISECONDS);
         } catch (Exception exc) {
-            exc.printStackTrace();
-
             if (drone != null) {
                 drone.stop();
             }
@@ -220,7 +227,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     private Mat findAndDrawObjects(Mat maskedImage, Mat frame) {
         return findAndDrawObjects(maskedImage, frame, new Scalar(250, 0, 0));
     }
-    
+
     private Mat findAndDrawObjects(Mat maskedImage, Mat frame, Scalar color) {
         // Init
         List<MatOfPoint> contours = new ArrayList<>();
@@ -267,28 +274,27 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
 
     public Point readQRCode(Mat frame) {
         BufferedImage image = mat2Image(frame);
-        BinaryBitmap bitmap = null;
+        BinaryBitmap bitmap;
         Map hintMap = new HashMap();
-        
+
         hintMap.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.L);
-        
+
         int[] pixels = image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth());
         RGBLuminanceSource source = new RGBLuminanceSource(image.getWidth(), image.getHeight(), pixels);
         bitmap = new BinaryBitmap(new HybridBinarizer(source));
-        
+
         Result qrCodeResult;
         try {
             qrCodeResult = new MultiFormatReader().decode(bitmap, hintMap);
             System.out.println("Result object created");
-        }
-        catch (NotFoundException ex) {
+        } catch (NotFoundException ex) {
             return null;
         }
         ResultPoint[] points = qrCodeResult.getResultPoints();
         System.out.println("Points received");
-        if (points.length != 3)
+        if (points.length != 3) {
             return null;
-        else {
+        } else {
             Point p = new Point();
             System.out.println("P0: " + points[0]);
             System.out.println("P1: " + points[1]);
@@ -298,7 +304,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             return p;
         }
     }
-    
+
     private void drawCrosshairs(Mat frame, int x, int y) {
         // Show crosshair
         Imgproc.circle(frame, new Point(x, y), 20, new Scalar(0, 255, 0), 2);
@@ -341,15 +347,15 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             objectDetected = true;
             trackedObject.x = facesArray[0].x + facesArray[0].width / 2;
             trackedObject.y = facesArray[0].y + facesArray[0].height / 2;
-            drawCrosshairs(frame, (int)trackedObject.x, (int)trackedObject.y);
+            drawCrosshairs(frame, (int) trackedObject.x, (int) trackedObject.y);
         }
     }
-    
+
     private void processQr(Mat frame) {
         Mat grayFrame = new Mat();
         Mat blurredImage = new Mat();
         Mat binarizedImage = new Mat();
-        
+
         // convert the frame in gray scale
         Imgproc.cvtColor(frame, grayFrame, Imgproc.COLOR_BGR2GRAY);
         // equalize the frame histogram to improve the result
@@ -360,7 +366,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         //Imgproc.threshold(blurredImage, binarizedImage, 90, 255, Imgproc.THRESH_BINARY);
         Imgproc.threshold(blurredImage, binarizedImage, 90, 255, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU);
         erodePanel.getGraphics().drawImage(this.mat2Image(binarizedImage), 0, 0, 213, 120, null);
-        
+
         Point qrCenter = readQRCode(binarizedImage);
 
         // If we have a point (center), use it as a tracking object
@@ -368,10 +374,10 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         if (qrCenter != null) {
             objectDetected = true;
             trackedObject = qrCenter;
-            drawCrosshairs(frame, (int)trackedObject.x, (int)trackedObject.y);
+            drawCrosshairs(frame, (int) trackedObject.x, (int) trackedObject.y);
         }
     }
-    
+
     private void processHsv(Mat frame) {
         // Init
         Mat blurredImage = new Mat();
@@ -977,25 +983,21 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     }//GEN-LAST:event_cameraPanelMouseClicked
 
     private void slidersStateChanged(javax.swing.event.ChangeEvent evt) {//GEN-FIRST:event_slidersStateChanged
-        String valuesToPrint = "";
-        
+        String valuesToPrint;
+
         if (hsvColorDetectionRadioButton.isSelected()) {
             valuesToPrint = "Hue range: " + this.hueMinSlider.getValue() + "-" + this.hueMaxSlider.getValue()
                     + ". Sat. range: " + this.saturationMinSlider.getValue() + "-" + this.saturationMaxSlider.getValue()
                     + ". Value range: " + this.valueMinSlider.getValue() + "-" + this.valueMaxSlider.getValue();
-        }
-        else if (rgbColorDetectionRadioButton.isSelected()) {
+        } else if (rgbColorDetectionRadioButton.isSelected()) {
             valuesToPrint = "Red range: " + this.hueMinSlider.getValue() + "-" + this.hueMaxSlider.getValue()
                     + ". Green range: " + this.saturationMinSlider.getValue() + "-" + this.saturationMaxSlider.getValue()
                     + ". Blue range: " + this.valueMinSlider.getValue() + "-" + this.valueMaxSlider.getValue();
-        }
-        else if (faceDetectionRadioButton.isSelected()) {
+        } else if (faceDetectionRadioButton.isSelected()) {
             valuesToPrint = "Face detection mode";
-        }
-        else if (qrDetectionRadioButton.isSelected()) {
+        } else if (qrDetectionRadioButton.isSelected()) {
             valuesToPrint = "QR Code detection mode";
-        }
-        else {
+        } else {
             valuesToPrint = "Pre-configured HSV object detection. Search for blue, green, yellow and red objects.";
         }
         statusLabel.setText(valuesToPrint);
@@ -1003,11 +1005,11 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
 
     private void startDroneButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_startDroneButtonActionPerformed
         if (!droneActive) {
-            //drone.takeOff();
+            drone.takeOff();
             startDroneButton.setText("Stop Drone");
-            //drone.hover();
+            drone.hover();
         } else {
-            //drone.landing();
+            drone.landing();
             startDroneButton.setText("Start Drone");
         }
         droneActive = !droneActive;
@@ -1030,7 +1032,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
         saturationMaxSlider.setEnabled(status);
         valueMaxSlider.setEnabled(status);
     }
-    
+
     private void changeSliderType(String type) {
         if (type.equals("HSV")) {
             huePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Hue"));
@@ -1038,8 +1040,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             valuePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Value"));
             hueMinSlider.setMaximum(180);
             hueMaxSlider.setMaximum(180);
-        }
-        else {
+        } else {
             huePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Red"));
             saturationPanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Green"));
             valuePanel.setBorder(javax.swing.BorderFactory.createTitledBorder("Blue"));
@@ -1047,14 +1048,14 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
             hueMaxSlider.setMaximum(255);
         }
     }
-    
+
     private void changeObjectPanelStatus(boolean status) {
         blueObjectColorRadioButton.setEnabled(status);
         greenObjectColorRadioButton.setEnabled(status);
         yellowObjectColorRadioButton.setEnabled(status);
         redObjectColorRadioButton.setEnabled(status);
     }
-    
+
     private void hsvColorDetectionRadioButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_hsvColorDetectionRadioButtonActionPerformed
         changeSlidersStatus(true);
         changeSliderType("HSV");
@@ -1108,7 +1109,7 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     }//GEN-LAST:event_resetDroneButtonActionPerformed
 
     private void formWindowClosed(java.awt.event.WindowEvent evt) {//GEN-FIRST:event_formWindowClosed
-        // TODO add your handling code here:
+        // 
     }//GEN-LAST:event_formWindowClosed
 
     private void formWindowClosing(java.awt.event.WindowEvent evt) {//GEN-FIRST:event_formWindowClosing
@@ -1170,3 +1171,5 @@ public class ARDroneDemo2 extends javax.swing.JFrame {
     private javax.swing.JRadioButton yellowObjectColorRadioButton;
     // End of variables declaration//GEN-END:variables
 }
+
+// EOF
